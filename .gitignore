@@ -1,5 +1,12 @@
+__pycache__
+*.pyc
+CVE-2020-6098/freeDiameter
+
 .arts
 .codeartsdoer
 docs
 pkgs
+
+# Do not upload the push script
+git_push.sh
 

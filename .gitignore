@@ -10,3 +10,5 @@ pkgs
 # Do not upload the push script
 git_push.sh
 
+# can not exploit remotely
+VUL-20260810-MME-CONF-ABORT

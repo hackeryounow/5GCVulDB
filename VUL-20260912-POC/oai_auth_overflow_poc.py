@@ -85,6 +85,11 @@ PDU = NGAP.NGAP_PDU_Descriptions.NGAP_PDU
 
 # ---- protocol constants -------------------------------------------------
 NGAP_PPID = 60                    # NGAP PPID (TS 38.412)
+# SCTP carries the PPID in network byte order, but pysctp passes sinfo_ppid to
+# the kernel verbatim (host order) and returns it un-swapped on recv. The
+# free5gc Go wrapper byte-swaps internally, so the Python port must do it here
+# or the AMF rejects every DATA chunk with "unsolicited PPID" and never replies.
+NGAP_PPID_NET = socket.htonl(NGAP_PPID)
 
 # NGAP procedure codes
 PROC_DOWNLINK_NAS_TRANSPORT = 4
@@ -312,7 +317,7 @@ def dial(host, port):
 
 
 def send_msg(sock, data):
-    sock.sctp_send(data, ppid=NGAP_PPID)
+    sock.sctp_send(data, ppid=NGAP_PPID_NET)
 
 
 def read_msg(sock, fd, timeout):
@@ -333,8 +338,9 @@ def read_msg(sock, fd, timeout):
             return None
         if not msg:
             return None
-        if getattr(notif, "ppid", NGAP_PPID) != NGAP_PPID:
-            continue                        # skip non-NGAP PPIDs
+        ppid = getattr(notif, "ppid", None)
+        if ppid is not None and ppid not in (NGAP_PPID, NGAP_PPID_NET):
+            continue                        # skip non-NGAP PPIDs (either byte order)
         return msg
 
 

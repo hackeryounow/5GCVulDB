@@ -12,3 +12,7 @@ git_push.sh
 
 # can not exploit remotely
 VUL-20260810-MME-CONF-ABORT
+.tmp*
+
+# stray discovery run log
+05_discovery_before_trigger.txt

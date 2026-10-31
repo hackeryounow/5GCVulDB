@@ -16,3 +16,5 @@ VUL-20260810-MME-CONF-ABORT
 
 # stray discovery run log
 05_discovery_before_trigger.txt
+
+BUG-*

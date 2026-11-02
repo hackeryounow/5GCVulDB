@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """
-PoC: demonstrate OAI CN5G AMF SCTP 4KB silent truncation
-(cand-oai-amf-sctp-trunc-01)
-
-Vulnerability class: CWE-130 / RFC 6458 §8 std-deviation / 3GPP TS 38.413 §8.3.
-Root cause: sctp_recvmsg with fixed 4096 stack buffer, MSG_TRUNC / MSG_EOR
-flags ignored. Legitimate >4KB NGAP PDU is silently truncated.
+PoC: exercise the OAI CN5G AMF N2 receive path with an oversized NGAP-shaped
+SCTP message. The AMF reads each SCTP message into a fixed 4096-byte buffer
+and ignores MSG_TRUNC/MSG_EOR, so any PDU larger than 4096 bytes (legal up to
+64 KB per 3GPP TS 38.413) is silently truncated and fails APER decoding.
+`attack` mode sends more than 4096 bytes to trigger the truncation; `control`
+and `boundary` modes send payloads that fit the buffer for comparison.
 
 Usage:
-    sudo python3 sctp_trunc_poc.py --target 172.31.100.20 --port 38412 \
-        --mode {attack|control} --size 4600
+    python3 poc.py --target 172.20.0.4 --port 38412 \
+        --mode {attack|control|boundary} [--size N]
 
-Modes:
-    attack  : send NGAP-like PDU of `--size` bytes (>4096), expect truncation
-    control : send NGAP-like PDU of `--size` bytes (<=4096), expect full read
+    --target   AMF N2 IP (default port 38412)
+    --mode     attack: force payload above 4096 bytes; control: cap at 4096;
+               boundary: exactly 4096
+    --size     declared NGAP PDU length in bytes (default 4600)
 
-Notes:
-    - Uses kernel AF_INET/SOCK_STREAM/IPPROTO_SCTP=132 via ctypes (Python's
-      `socket` module does not expose AF_SCTP constants here).
-    - PPID=60 = NGAP per 3GPP TS 36.413/38.413 §8.3 SCTP payload protocol id.
-    - A minimal APER header is prepended so the outer PDU length promise matches
-      the declared size (a valid PDU that would exceed the 4096 buffer).
+Prerequisites: python3 with ctypes and libsctp (libsctp.so.1) on the host.
+Expected output: one stderr line reporting the number of bytes sent and exit
+code 0 on a successful send; observe the AMF log for the "Received a message
+(length ...)" line to compare the delivered length against the sent size.
 """
 import argparse
 import ctypes

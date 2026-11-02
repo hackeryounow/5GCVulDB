@@ -1,49 +1,34 @@
-#!/usr/bin/env python3
 """
-PoC - open5GS SMF uncontrolled memory growth via Nsmf_PDUSession S-NSSAI
-metric-cardinality explosion (non-PCF NF).
+open5GS SMF S-NSSAI metric-cardinality memory-leak PoC.
 
-Vulnerability
--------------
-On `POST /nsmf-pdusession/v1/sm-contexts` (SmContextCreateData), open5GS reads the
-client-supplied `servingNetwork` (PLMN) and `sNssai` (SST + SD) straight from the JSON
-body and immediately calls smf_metrics_inst_by_slice_add() twice
-(src/smf/nsmf-handler.c:301-304, before any UDM / PCF / PFCP work).
+Floods POST /nsmf-pdusession/v1/sm-contexts with SmContextCreateData bodies in
+which the client-supplied sNssai.sd is varied per request. The SMF installs a
+permanent Prometheus metric instance keyed by (plmn, sst, sd) in the global
+metrics_hash_by_slice before validating the subscriber or decoding the NAS
+message, and that hash is never evicted — so each distinct SD leaks permanent
+memory and one extra /metrics series even though every request fails. Requests
+are sent over short-lived h2c connections (chunked, threaded) to sidestep the
+server's low MAX_CONCURRENT_STREAMS.
 
-That helper (src/smf/metrics.c:257-305) allocates a permanent Prometheus metric
-instance `ogs_metrics_inst_new()` keyed by the (plmn, sst, sd) triple, strdup's the
-label strings, calloc's a `slice_key`, and stores it in the process-global
-`metrics_hash_by_slice`. The hash has NO runtime eviction: `smf_metrics_free_inst_by_slice()`
-has zero call sites and the table is only walked/freed in `smf_metrics_final()` at
-process shutdown (src/smf/metrics.c:524-537).
+Usage:
+    # prerequisites: python3 with the 'h2' package (pip install h2); a running
+    # open5GS SMF whose SBI port and metrics port (default 9091) are reachable.
 
-Consequence: every distinct client-supplied S-NSSAI permanently inflates SMF resident
-memory and the /metrics scrape size/time (O(N)). Because the allocation happens BEFORE
-the subscriber is validated and BEFORE the NAS PDU is decoded, the metric instance
-persists even when the request later FAILS (400/4xx) — an attacker needs no subscriber
-and no completed session to grow the table without bound -> memory-exhaustion DoS plus
-a /metrics scrape-latency DoS.
+    # attack: N requests, each with a DISTINCT sd (fresh range per run) ->
+    # N permanent metric instances + N extra /metrics series
+    python3 poc.py --target-ip 172.22.0.7 --sbi-port 7777 \
+            --count 8000 --sd-start 0x100000
 
-The trigger is a single, unauthenticated HTTP/2 (h2c prior-knowledge) request per new
-slice; the SD field is a free-form 24-bit hex string, so ~1.6e7 distinct keys are
-available per (plmn, sst).
+    # benign control: the SAME sd on every request -> the hash dedups ->
+    # series count stays flat, only the counter increments
+    python3 poc.py --target-ip 172.22.0.7 --sbi-port 7777 \
+            --count 8000 --sd-start 0x0F00FF --control
 
-Standard deviation: TS 29.571 / TS 29.502 require rejecting out-of-range or unknown
-S-NSSAI request content with 400 (not silently allocating unbounded per-value state);
-the OpenAPI model declares sNssai as a single configured slice, but the generated cJSON
-parser enforces no allow-list and the metric registry has no cardinality cap.
-
-Usage
------
-    # fire N POSTs, each with a DISTINCT sd (attack -> N permanent metric instances)
-    python3 smf_slice_metrics_leak_poc.py --target-ip 172.22.0.7 --sbi-port 7777 \
-            --count 3000 --sd-start 0x100000
-
-    # benign control: the SAME sd every request (hash dedups -> flat, 1 instance)
-    python3 smf_slice_metrics_leak_poc.py --target-ip 172.22.0.7 --sbi-port 7777 \
-            --count 3000 --sd-start 0x100000 --control
-
-Dependencies: python3 + the `h2` package (pip install h2).
+    Expected output: one [*] line per run ending in
+    "sent=<N>/<N> requests in <T>s"; afterwards SMF RSS and the number of
+    '^fivegs_smffunction_sm_pdusessioncreationreq{' series on
+    http://<target-ip>:9091/metrics are permanently higher by ~one series
+    per distinct sd (attack) or unchanged (control).
 """
 import argparse
 import socket

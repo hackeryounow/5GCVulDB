@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
 PoC for the open5GS SBI heap out-of-bounds read in parse_scheme_output
-(lib/sbi/conv.c, shared by every NF that parses a SUCI): a scheme-output hex
-string decoding to 42..44 bytes passes the pre-fix lower-bound length check
-(<= 41), so the parser calloc()s less memory than the fixed slice
-(ecckey + cipher-text + 8-byte MAC-tag, 45 bytes total for Profile A) it
-later copies, and the failed MAC comparison hexdumps the out-of-bounds tag
-tail into the NF's ERROR-level log. The script sends GET
-/nudm-sdm/v2/{suci}/am-data requests via curl --http2-prior-knowledge with
-scheme_output sizes 41 (control-rejected), 42 (out-of-bounds attack), and
-49 and 50 (in-bounds controls).
+(lib/sbi/conv.c, shared by every NF that parses a SUCI). The parser allocates
+strlen(hex)/2 bytes for the SUCI scheme output but only lower-bound checks it
+(rejecting sizes <= 41), then copies a fixed 45-byte Profile-A slice, so a
+scheme output of 42..44 bytes makes the trailing 8-byte MAC-tag memcpy read
+3/2/1 bytes past the chunk; the failed MAC comparison hexdumps that tag —
+including the out-of-bounds tail — into the NF's ERROR-level log. This script
+sends GET /nudm-sdm/v2/{suci}/am-data requests via curl
+--http2-prior-knowledge with scheme-output sizes 41 (rejected control), 42
+(out-of-bounds attack), and 49 and 50 (in-bounds controls).
 
 Usage:
     python3 poc.py --target <UDM-IP> --port <UDM-SBI-port> [--mcc 460]
         [--mnc 09] [--scheme 1] [--pki-value 1] [--fill aa] [--run N]
 
 Expect four response blocks, each ending in HTTP=404 (the parser faults
-before routing). The fault itself is visible in the target NF log: a
-'Not enought length [82]' rejection for size 41 and a 'MAC-tag not matched'
-hexdump with a past-allocation tail for size 42.
+before routing). The fault is visible in the UDM log: a 'Not enought
+length [82]' rejection for size 41 and a 'MAC-tag not matched' hexdump with
+a past-allocation zero tail for size 42.
 """
 import argparse
 import json
@@ -46,7 +46,7 @@ def run_curl(target, port, suci):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", required=True,
-                    help="open5GS UDM IP (reachable over the lane bridge)")
+                    help="open5GS UDM IP (reachable over the core network)")
     ap.add_argument("--port", type=int, default=7777,
                     help="UDM SBI port (h2c cleartext)")
     ap.add_argument("--mcc", default="460")
@@ -68,9 +68,9 @@ def main():
 
     sizes = [
         (41, "control-REJECTED (pre-fix threshold <= 41)"),
-        (42, "ATTACK  (8-byte OOB read past 42-byte calloc)"),
-        (49, "ATTACK  (1-byte  OOB read past 49-byte calloc)"),
-        (50, "control-INBOUND (no OOB: exactly reads 50 bytes)"),
+        (42, "ATTACK  (MAC-tag memcpy reads 3 bytes past the 42-byte chunk)"),
+        (49, "control-INBOUND (no OOB: 8-byte tag fully inside 49-byte chunk)"),
+        (50, "control-INBOUND (no OOB: parser consumes exactly 50 bytes)"),
     ]
 
     for size, note in sizes:

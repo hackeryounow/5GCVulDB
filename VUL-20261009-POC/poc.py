@@ -1,55 +1,26 @@
 #!/usr/bin/env python3
 """
-PoC - OAI CN5G NRF uncontrolled memory growth via NFDiscovery search-result
-retention (non-PCF NF).
+PoC - OAI CN5G NRF memory growth via NFDiscovery search-result retention.
 
-Vulnerability
--------------
-On `GET /nnrf-disc/v1/nf-instances` (NFDiscover), OAI-CN5G NRF:
-
-  1. passes the authorization gate unconditionally --
-     nrf_app::is_service_discover_allowed() is a stub that returns true
-     (src/nrf_app/nrf_app.cpp:1359-1364);
-  2. mints a brand-new, server-side monotonic Search-Id per request --
-     generate_search_id() = search_id_generator.get_uid() which does `++uid`
-     (src/nrf_app/nrf_app.cpp:1367-1369 + src/common-src/utils/uint_generator.hpp);
-  3. allocates a fresh std::make_shared<nrf_search_result>() and, if any NFs
-     matched, pins their nrf_profile shared_ptrs (src/nrf_app/nrf_app.cpp:685-694);
-  4. stamps a validity period of 100 s (src/nrf_app/nrf_app.cpp:704) that is
-     NEVER enforced -- there is no search-result sweeper;
-  5. inserts it into the process-global map `search_id2search_result`
-     (add_search_result, src/nrf_app/nrf_app.cpp:1372-1378).
-
-`search_id2search_result` is insert-only: there is NO erase anywhere in the
-NRF (its siblings instance_id->profile and subscription_id->subscription DO get
-erased on deregister/DELETE; search results never do). The map is only destroyed
-at process shutdown.
-
-Consequence: every unauthenticated NFDiscovery request permanently grows the
-map by one entry (~hundreds of bytes, plus retained NF profiles). Because the
-id is server-generated, NO client value can be reused to dedup -- the attacker
-cannot be limited by cache deduplication. Sustained discovery traffic ->
-monotonic RSS growth (memory-exhaustion DoS) and unbounded retention of
-deregistered NF profiles.
-
-The clean differential: a request with an INVALID `target-nf-type` is rejected
-with 400 at src/nrf_app/nrf_app.cpp:670-678, i.e. BEFORE the allocation at :685,
-so it grows nothing (flat control at identical request volume).
-
-Standard deviation: TS 29.510 / TS 29.571 make search results a cached,
-time-bounded artifact; retaining them forever with an enforced validity_period
-that is never honored is an implementation defect (CWE-401/772 -> CWE-400).
+Every valid GET /nnrf-disc/v1/nf-instances makes the NRF allocate a fresh
+nrf_search_result and insert it into the process-global
+search_id2search_result map under a server-minted monotonic Search-Id; the
+map is never erased and the stamped validity period is never enforced, so
+each request leaves one permanent entry. This script floods the endpoint
+over short-lived h2c connections (OAI serves HTTP/2 only) to grow the map,
+and supports a control mode whose invalid target-nf-type is rejected with
+400 before the allocation, producing no growth.
 
 Usage
 -----
     # ATTACK: N valid NFDiscover requests -> N permanent search results
-    python3 oai_nrf_disc_leak_poc.py --target-ip 127.0.0.1 --port 18080 --count 20000
+    python3 poc.py --target-ip 172.20.0.3 --port 8080 --count 100000
 
     # CONTROL: N requests with an invalid target-nf-type (400 before allocation)
-    python3 oai_nrf_disc_leak_poc.py --target-ip 127.0.0.1 --port 18080 --count 20000 --control
+    python3 poc.py --target-ip 172.20.0.3 --port 8080 --count 100000 --control
 
     # PROBE: send one request and print the response (shows the Search-Id)
-    python3 oai_nrf_disc_leak_poc.py --probe
+    python3 poc.py --target-ip 172.20.0.3 --port 8080 --probe
 
 Dependencies: python3 + the `h2` package (pip install h2).
 """

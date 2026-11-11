@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
 """
-free5GC UDM -- UdmUePool unbounded-growth memory leak PoC (non-PCF NF).
+PoC - free5GC UDM UdmUePool unbounded-growth memory leak (v4.3.0).
 
-Leak (source, NFs/udm @ b6c5e5c, free5GC v4.3.0):
-  GET /nudm-sdm/v2/{supi}/ue-context-in-smf-data
-    -> processor.GetUeContextInSmfDataProcedure (subscriber_data_management.go:896)
-       :913  p.Context().CreateUeContextInSmfDataforUe(supi, body)   <-- STORE, BEFORE any UDR gate
-            -> context.CreateUeContextInSmfDataforUe (context.go:261)
-                 -> NewUdmUe(supi) if absent -> UdmUePool.Store(supi, ue)  (context.go:301)
-  UdmUePool is a process-global sync.Map (context.go:53). The whole NF has
-  ZERO production `.Delete(` -> every distinct SUPI permanently retains one
-  heavyweight UdmUeContext. Fires for *unprovisioned* SUPIs (store is before the
-  UDR QuerySmfRegList at :922), needs no auth (OAuth off), no UE, no session.
-
-The PoC floods distinct-SUPI GETs (attack) and measures UDM RSS; the `--control`
-mode reuses ONE SUPI (Load-hits, no new store) so RSS must stay flat. A fixed-SUPI
-warmup absorbs Go-heap churn before the baseline.
+Floods GET /nudm-sdm/v2/{supi}/ue-context-in-smf-data with a distinct SUPI per
+request (--mode attack): the SDM handler stores a UdmUeContext in the
+process-global UdmUePool sync.Map before any token/UDR gate, and the whole NF
+has no eviction path, so UDM RSS grows ~1.5 kB per request and never returns
+to baseline. --mode control reuses one SUPI (Load-hits only, no new store) and
+must stay flat. A fixed-SUPI --warmup absorbs transient Go heap churn before
+the RSS baseline; the verdict combines net growth, the second-half slope and
+the HTTP status counts. RSS is sampled from the container's VmRSS (docker
+exec) every --sample-every requests.
 
 Usage:
-  python3 udm_uepool_leak_poc.py --target-ip 127.0.0.1 --port 28082 \
-      --ctr f5u-udm --count 50000 --mode attack
-  python3 udm_uepool_leak_poc.py --target-ip 127.0.0.1 --port 28082 \
-      --ctr f5u-udm --count 50000 --mode control
+  python3 poc.py --target-ip 10.100.200.12 --port 8000 --ctr udm \
+      --count 50000 --mode attack    # distinct-SUPI flood -> RSS climbs
+  python3 poc.py --target-ip 10.100.200.12 --port 8000 --ctr udm \
+      --count 50000 --mode control   # one reused SUPI -> flat
+
+Prerequisites: python3 + requests; the UDM SBI must be reachable at
+--target-ip:--port and --ctr must name the UDM container for RSS sampling.
+Optional: --csv writes the RSS series, --summary writes a JSON verdict.
 """
 import argparse, json, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
